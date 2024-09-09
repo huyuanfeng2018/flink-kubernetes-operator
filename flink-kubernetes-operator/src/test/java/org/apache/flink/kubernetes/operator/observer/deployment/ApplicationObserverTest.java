@@ -20,6 +20,8 @@ package org.apache.flink.kubernetes.operator.observer.deployment;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.PipelineOptions;
+import org.apache.flink.configuration.PipelineOptionsInternal;
+import org.apache.flink.core.execution.CheckpointType;
 import org.apache.flink.kubernetes.operator.OperatorTestBase;
 import org.apache.flink.kubernetes.operator.TestUtils;
 import org.apache.flink.kubernetes.operator.TestingFlinkService;
@@ -72,16 +74,23 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     private Context<FlinkDeployment> readyContext;
     private TestObserverAdapter<FlinkDeployment> observer;
+    private FlinkDeployment deployment;
 
     @Override
     public void setup() {
         observer = new TestObserverAdapter<>(this, new ApplicationObserver(eventRecorder));
         readyContext = TestUtils.createContextWithReadyJobManagerDeployment(kubernetesClient);
+        deployment = TestUtils.buildApplicationCluster();
+        var jobId = new JobID().toHexString();
+        deployment
+                .getSpec()
+                .getFlinkConfiguration()
+                .put(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID.key(), jobId);
+        deployment.getStatus().getJobStatus().setJobId(jobId);
     }
 
     @Test
     public void observeApplicationCluster() throws Exception {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         Configuration conf =
                 configManager.getDeployConfig(deployment.getMetadata(), deployment.getSpec());
 
@@ -178,12 +187,10 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     @Test
     public void testEventGeneratedWhenStatusChanged() throws Exception {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         Configuration conf =
                 configManager.getDeployConfig(deployment.getMetadata(), deployment.getSpec());
         flinkService.submitApplicationCluster(deployment.getSpec().getJob(), conf, false);
 
-        deployment.setStatus(deployment.initStatus());
         ReconciliationUtils.updateStatusForDeployedSpec(deployment, new Configuration());
         deployment.getStatus().setJobManagerDeploymentStatus(JobManagerDeploymentStatus.READY);
 
@@ -211,12 +218,10 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     @Test
     public void testErrorForwardToStatusWhenJobFailed() throws Exception {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         Configuration conf =
                 configManager.getDeployConfig(deployment.getMetadata(), deployment.getSpec());
         flinkService.submitApplicationCluster(deployment.getSpec().getJob(), conf, false);
 
-        deployment.setStatus(deployment.initStatus());
         ReconciliationUtils.updateStatusForDeployedSpec(deployment, new Configuration());
         deployment.getStatus().setJobManagerDeploymentStatus(JobManagerDeploymentStatus.READY);
 
@@ -232,19 +237,22 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     @Test
     public void observeSavepoint() throws Exception {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         Long timedOutNonce = 1L;
         deployment.getSpec().getJob().setSavepointTriggerNonce(timedOutNonce);
         Configuration conf =
                 configManager.getDeployConfig(deployment.getMetadata(), deployment.getSpec());
+        deployment
+                .getSpec()
+                .getFlinkConfiguration()
+                .put(KubernetesOperatorConfigOptions.SNAPSHOT_RESOURCE_ENABLED.key(), "false");
         flinkService.submitApplicationCluster(deployment.getSpec().getJob(), conf, false);
         bringToReadyStatus(deployment);
         assertTrue(ReconciliationUtils.isJobRunning(deployment.getStatus()));
 
-        flinkService.triggerSavepoint(
+        flinkService.triggerSavepointLegacy(
                 deployment.getStatus().getJobStatus().getJobId(),
                 SnapshotTriggerType.MANUAL,
-                deployment.getStatus().getJobStatus().getSavepointInfo(),
+                deployment,
                 conf);
         // pending savepoint
         assertEquals(
@@ -335,10 +343,10 @@ public class ApplicationObserverTest extends OperatorTestBase {
         // savepoint success
         Long firstNonce = 123L;
         deployment.getSpec().getJob().setSavepointTriggerNonce(firstNonce);
-        flinkService.triggerSavepoint(
+        flinkService.triggerSavepointLegacy(
                 deployment.getStatus().getJobStatus().getJobId(),
                 SnapshotTriggerType.MANUAL,
-                deployment.getStatus().getJobStatus().getSavepointInfo(),
+                deployment,
                 conf);
         assertEquals(
                 "savepoint_trigger_1",
@@ -367,10 +375,10 @@ public class ApplicationObserverTest extends OperatorTestBase {
         // second attempt success
         Long secondNonce = 456L;
         deployment.getSpec().getJob().setSavepointTriggerNonce(secondNonce);
-        flinkService.triggerSavepoint(
+        flinkService.triggerSavepointLegacy(
                 deployment.getStatus().getJobStatus().getJobId(),
                 SnapshotTriggerType.MANUAL,
-                deployment.getStatus().getJobStatus().getSavepointInfo(),
+                deployment,
                 conf);
         assertEquals(
                 "savepoint_trigger_2",
@@ -401,10 +409,10 @@ public class ApplicationObserverTest extends OperatorTestBase {
         // application failure after checkpoint trigger
         Long thirdNonce = 789L;
         deployment.getSpec().getJob().setSavepointTriggerNonce(thirdNonce);
-        flinkService.triggerSavepoint(
+        flinkService.triggerSavepointLegacy(
                 deployment.getStatus().getJobStatus().getJobId(),
                 SnapshotTriggerType.MANUAL,
-                deployment.getStatus().getJobStatus().getSavepointInfo(),
+                deployment,
                 conf);
         assertEquals(
                 "savepoint_trigger_3",
@@ -485,19 +493,12 @@ public class ApplicationObserverTest extends OperatorTestBase {
         assertEquals(
                 org.apache.flink.api.common.JobStatus.FAILED.name(),
                 deployment.getStatus().getJobStatus().getState());
-        assertEquals(
-                "last-SP",
-                deployment
-                        .getStatus()
-                        .getJobStatus()
-                        .getSavepointInfo()
-                        .getLastSavepoint()
-                        .getLocation());
+        assertEquals("last-SP", deployment.getStatus().getJobStatus().getUpgradeSavepointPath());
         assertFalse(SnapshotUtils.savepointInProgress(deployment.getStatus().getJobStatus()));
 
         observer.observe(deployment, readyContext);
         assertEquals(
-                3,
+                2,
                 deployment
                         .getStatus()
                         .getJobStatus()
@@ -524,7 +525,6 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     @Test
     public void observeCheckpoint() throws Exception {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         Long timedOutNonce = 1L;
         final var errorReason = EventRecorder.Reason.CheckpointError.name();
         final var namespace = deployment.getMetadata().getNamespace();
@@ -538,11 +538,16 @@ public class ApplicationObserverTest extends OperatorTestBase {
         bringToReadyStatus(deployment);
         assertTrue(ReconciliationUtils.isJobRunning(deployment.getStatus()));
 
-        flinkService.triggerCheckpoint(
-                deployment.getStatus().getJobStatus().getJobId(),
-                SnapshotTriggerType.MANUAL,
-                getCheckpointInfo(deployment),
-                conf);
+        var triggerId =
+                flinkService.triggerCheckpoint(
+                        deployment.getStatus().getJobStatus().getJobId(),
+                        CheckpointType.FULL,
+                        conf);
+        getCheckpointInfo(deployment)
+                .setTrigger(
+                        triggerId,
+                        SnapshotTriggerType.MANUAL,
+                        org.apache.flink.kubernetes.operator.api.status.CheckpointType.FULL);
         // pending checkpoint
         assertEquals("checkpoint_trigger_0", getCheckpointInfo(deployment).getTriggerId());
         observer.observe(deployment, readyContext);
@@ -574,11 +579,16 @@ public class ApplicationObserverTest extends OperatorTestBase {
         // checkpoint success
         Long firstNonce = 123L;
         deployment.getSpec().getJob().setCheckpointTriggerNonce(firstNonce);
-        flinkService.triggerCheckpoint(
-                deployment.getStatus().getJobStatus().getJobId(),
-                SnapshotTriggerType.MANUAL,
-                getCheckpointInfo(deployment),
-                conf);
+        triggerId =
+                flinkService.triggerCheckpoint(
+                        deployment.getStatus().getJobStatus().getJobId(),
+                        CheckpointType.FULL,
+                        conf);
+        getCheckpointInfo(deployment)
+                .setTrigger(
+                        triggerId,
+                        SnapshotTriggerType.MANUAL,
+                        org.apache.flink.kubernetes.operator.api.status.CheckpointType.FULL);
         assertEquals("checkpoint_trigger_1", getCheckpointInfo(deployment).getTriggerId());
         observer.observe(deployment, readyContext);
         observer.observe(deployment, readyContext);
@@ -590,11 +600,14 @@ public class ApplicationObserverTest extends OperatorTestBase {
         // second attempt success
         Long secondNonce = 456L;
         deployment.getSpec().getJob().setCheckpointTriggerNonce(secondNonce);
-        flinkService.triggerCheckpoint(
-                getJobStatus(deployment).getJobId(),
-                SnapshotTriggerType.MANUAL,
-                getCheckpointInfo(deployment),
-                conf);
+        triggerId =
+                flinkService.triggerCheckpoint(
+                        getJobStatus(deployment).getJobId(), CheckpointType.FULL, conf);
+        getCheckpointInfo(deployment)
+                .setTrigger(
+                        triggerId,
+                        SnapshotTriggerType.MANUAL,
+                        org.apache.flink.kubernetes.operator.api.status.CheckpointType.FULL);
         assertEquals("checkpoint_trigger_2", getCheckpointInfo(deployment).getTriggerId());
         assertTrue(SnapshotUtils.checkpointInProgress(getJobStatus(deployment)));
 
@@ -608,11 +621,14 @@ public class ApplicationObserverTest extends OperatorTestBase {
         // application failure after checkpoint trigger
         Long thirdNonce = 789L;
         deployment.getSpec().getJob().setCheckpointTriggerNonce(thirdNonce);
-        flinkService.triggerCheckpoint(
-                getJobStatus(deployment).getJobId(),
-                SnapshotTriggerType.MANUAL,
-                getCheckpointInfo(deployment),
-                conf);
+        triggerId =
+                flinkService.triggerCheckpoint(
+                        getJobStatus(deployment).getJobId(), CheckpointType.FULL, conf);
+        getCheckpointInfo(deployment)
+                .setTrigger(
+                        triggerId,
+                        SnapshotTriggerType.MANUAL,
+                        org.apache.flink.kubernetes.operator.api.status.CheckpointType.FULL);
         assertEquals("checkpoint_trigger_3", getCheckpointInfo(deployment).getTriggerId());
         assertTrue(SnapshotUtils.checkpointInProgress(getJobStatus(deployment)));
         flinkService.setPortReady(false);
@@ -656,7 +672,6 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     @Test
     public void testSavepointFormat() throws Exception {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         Configuration conf =
                 configManager.getDeployConfig(deployment.getMetadata(), deployment.getSpec());
         flinkService.submitApplicationCluster(deployment.getSpec().getJob(), conf, false);
@@ -666,10 +681,10 @@ public class ApplicationObserverTest extends OperatorTestBase {
         // canonical savepoint
         Long firstNonce = 123L;
         deployment.getSpec().getJob().setSavepointTriggerNonce(firstNonce);
-        flinkService.triggerSavepoint(
+        flinkService.triggerSavepointLegacy(
                 deployment.getStatus().getJobStatus().getJobId(),
                 SnapshotTriggerType.MANUAL,
-                deployment.getStatus().getJobStatus().getSavepointInfo(),
+                deployment,
                 conf);
 
         observer.observe(deployment, readyContext);
@@ -702,10 +717,10 @@ public class ApplicationObserverTest extends OperatorTestBase {
                                 OPERATOR_SAVEPOINT_FORMAT_TYPE.key(),
                                 org.apache.flink.core.execution.SavepointFormatType.NATIVE.name()));
         conf = configManager.getDeployConfig(deployment.getMetadata(), deployment.getSpec());
-        flinkService.triggerSavepoint(
+        flinkService.triggerSavepointLegacy(
                 deployment.getStatus().getJobStatus().getJobId(),
                 SnapshotTriggerType.MANUAL,
-                deployment.getStatus().getJobStatus().getSavepointInfo(),
+                deployment,
                 conf);
 
         observer.observe(deployment, readyContext);
@@ -731,9 +746,8 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     private void bringToReadyStatus(FlinkDeployment deployment) {
         ReconciliationUtils.updateStatusForDeployedSpec(deployment, new Configuration());
-        JobStatus jobStatus = new JobStatus();
+        JobStatus jobStatus = deployment.getStatus().getJobStatus();
         jobStatus.setJobName("jobname");
-        jobStatus.setJobId("0000000000");
         jobStatus.setState(JobState.RUNNING.name());
         deployment.getStatus().setJobStatus(jobStatus);
         deployment.getStatus().setJobManagerDeploymentStatus(JobManagerDeploymentStatus.READY);
@@ -741,7 +755,6 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     @Test
     public void observeListJobsError() {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         bringToReadyStatus(deployment);
         observer.observe(deployment, readyContext);
         assertEquals(
@@ -771,7 +784,6 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
         var context = TestUtils.createContextWithDeployment(kubernetesDeployment, kubernetesClient);
 
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         deployment.getMetadata().setGeneration(123L);
 
         var status = deployment.getStatus();
@@ -842,15 +854,13 @@ public class ApplicationObserverTest extends OperatorTestBase {
                 status.getJobManagerDeploymentStatus());
 
         var specWithMeta = status.getReconciliationStatus().deserializeLastReconciledSpecWithMeta();
-        assertEquals(321L, specWithMeta.getMeta().getMetadata().getGeneration());
+        assertEquals(321L, status.getObservedGeneration());
         assertEquals(JobState.RUNNING, specWithMeta.getSpec().getJob().getState());
         assertEquals(5, specWithMeta.getSpec().getJob().getParallelism());
     }
 
     @Test
     public void observeAlreadyScaled() {
-        var deployment = TestUtils.buildApplicationCluster();
-
         // Update status for for running job
         ReconciliationUtils.updateStatusBeforeDeploymentAttempt(
                 deployment,
@@ -880,7 +890,6 @@ public class ApplicationObserverTest extends OperatorTestBase {
 
     @Test
     public void validateLastReconciledClearedOnInitialFailure() {
-        FlinkDeployment deployment = TestUtils.buildApplicationCluster();
         deployment.getMetadata().setGeneration(123L);
 
         ReconciliationUtils.updateStatusBeforeDeploymentAttempt(

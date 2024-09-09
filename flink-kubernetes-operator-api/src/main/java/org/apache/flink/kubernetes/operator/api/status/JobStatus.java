@@ -50,9 +50,11 @@ public class JobStatus {
     /** Update time of the job. */
     private String updateTime;
 
+    private String upgradeSavepointPath;
+
     /** Information about pending and last savepoint for the job. */
-    private SavepointInfo savepointInfo = new SavepointInfo();
+    @Deprecated private SavepointInfo savepointInfo = new SavepointInfo();
 
     /** Information about pending and last checkpoint for the job. */
-    private CheckpointInfo checkpointInfo = new CheckpointInfo();
+    @Deprecated private CheckpointInfo checkpointInfo = new CheckpointInfo();
 }

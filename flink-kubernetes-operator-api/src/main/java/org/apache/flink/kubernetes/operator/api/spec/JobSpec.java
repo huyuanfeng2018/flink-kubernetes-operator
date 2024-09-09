@@ -64,6 +64,7 @@ public class JobSpec implements Diffable<JobSpec> {
      * savepoint, change the number to a different non-null value.
      */
     @SpecDiff(DiffType.IGNORE)
+    @Deprecated
     private Long savepointTriggerNonce;
 
     /**
@@ -78,6 +79,7 @@ public class JobSpec implements Diffable<JobSpec> {
      * checkpoint, change the number to a different non-null value.
      */
     @SpecDiff(DiffType.IGNORE)
+    @Deprecated
     private Long checkpointTriggerNonce;
 
     /** Upgrade mode of the Flink job. */

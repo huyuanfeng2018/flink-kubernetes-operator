@@ -50,6 +50,7 @@ import io.fabric8.kubernetes.client.KubernetesClient;
 import io.javaoperatorsdk.operator.api.reconciler.DeleteControl;
 import io.javaoperatorsdk.operator.processing.event.ResourceID;
 import lombok.SneakyThrows;
+import org.apache.commons.lang3.ObjectUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -159,8 +160,15 @@ public class ApplicationReconciler
                 relatedResource.getStatus().getClusterInfo());
 
         if (savepoint.isPresent()) {
+            // Savepoint deployment
             deployConfig.set(SavepointConfigOptions.SAVEPOINT_PATH, savepoint.get());
+        } else if (requireHaMetadata && flinkService.atLeastOneCheckpoint(deployConfig)) {
+            // Last state deployment, explicitly set a dummy savepoint path to avoid accidental
+            // incorrect state restore in case the HA metadata is deleted by the user
+            deployConfig.set(SavepointConfigOptions.SAVEPOINT_PATH, LAST_STATE_DUMMY_SP_PATH);
+            status.getJobStatus().setUpgradeSavepointPath(LAST_STATE_DUMMY_SP_PATH);
         } else {
+            // Stateless deployment, remove any user configured savepoint path
             deployConfig.removeConfig(SavepointConfigOptions.SAVEPOINT_PATH);
         }
 
@@ -203,12 +211,14 @@ public class ApplicationReconciler
         // https://issues.apache.org/jira/browse/FLINK-19358
         // https://issues.apache.org/jira/browse/FLINK-29109
 
-        if (deployConfig.get(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID) != null) {
-            // user managed, don't touch
+        var status = resource.getStatus();
+        var userJobId = deployConfig.get(PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID);
+        if (userJobId != null) {
+            status.getJobStatus().setJobId(userJobId);
+            statusRecorder.patchAndCacheStatus(resource, client);
             return;
         }
 
-        var status = resource.getStatus();
         // Rotate job id when not last-state deployment
         if (status.getJobStatus().getJobId() == null || !lastStateDeploy) {
             String jobId = JobID.generate().toHexString();
@@ -226,7 +236,10 @@ public class ApplicationReconciler
     @Override
     protected void cancelJob(FlinkResourceContext<FlinkDeployment> ctx, UpgradeMode upgradeMode)
             throws Exception {
-        ctx.getFlinkService().cancelJob(ctx.getResource(), upgradeMode, ctx.getObserveConfig());
+        var conf = ObjectUtils.firstNonNull(ctx.getObserveConfig(), new Configuration());
+        ctx.getFlinkService()
+                .cancelJob(ctx.getResource(), upgradeMode, conf)
+                .ifPresent(location -> setUpgradeSavepointPath(ctx, location));
     }
 
     @Override

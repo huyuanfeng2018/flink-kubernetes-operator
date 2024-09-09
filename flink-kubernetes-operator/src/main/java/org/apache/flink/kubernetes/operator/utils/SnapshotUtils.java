@@ -22,15 +22,18 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.kubernetes.operator.api.AbstractFlinkResource;
 import org.apache.flink.kubernetes.operator.api.spec.FlinkVersion;
+import org.apache.flink.kubernetes.operator.api.status.CommonStatus;
 import org.apache.flink.kubernetes.operator.api.status.JobStatus;
+import org.apache.flink.kubernetes.operator.api.status.Savepoint;
 import org.apache.flink.kubernetes.operator.api.status.SnapshotInfo;
 import org.apache.flink.kubernetes.operator.api.status.SnapshotTriggerType;
 import org.apache.flink.kubernetes.operator.config.KubernetesOperatorConfigOptions;
 import org.apache.flink.kubernetes.operator.reconciler.ReconciliationUtils;
 import org.apache.flink.kubernetes.operator.reconciler.SnapshotType;
-import org.apache.flink.kubernetes.operator.service.FlinkService;
+import org.apache.flink.kubernetes.operator.reconciler.deployment.AbstractJobReconciler;
 
 import io.fabric8.kubernetes.client.KubernetesClient;
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.core.util.CronExpression;
 import org.slf4j.Logger;
@@ -123,51 +126,6 @@ public class SnapshotUtils {
     }
 
     /**
-     * Triggers any pending manual or periodic snapshots and updates the status accordingly.
-     *
-     * @param flinkService The {@link FlinkService} used to trigger snapshots.
-     * @param resource The resource that should be snapshotted.
-     * @param conf The observe config of the resource.
-     * @return True if a snapshot was triggered.
-     * @throws Exception An error during snapshot triggering.
-     */
-    public static boolean triggerSnapshotIfNeeded(
-            FlinkService flinkService,
-            AbstractFlinkResource<?, ?> resource,
-            Configuration conf,
-            SnapshotType snapshotType)
-            throws Exception {
-
-        Optional<SnapshotTriggerType> triggerOpt =
-                shouldTriggerSnapshot(resource, conf, snapshotType);
-        if (triggerOpt.isEmpty()) {
-            return false;
-        }
-
-        var triggerType = triggerOpt.get();
-        String jobId = resource.getStatus().getJobStatus().getJobId();
-        switch (snapshotType) {
-            case SAVEPOINT:
-                flinkService.triggerSavepoint(
-                        jobId,
-                        triggerType,
-                        resource.getStatus().getJobStatus().getSavepointInfo(),
-                        conf);
-                break;
-            case CHECKPOINT:
-                flinkService.triggerCheckpoint(
-                        jobId,
-                        triggerType,
-                        resource.getStatus().getJobStatus().getCheckpointInfo(),
-                        conf);
-                break;
-            default:
-                throw new IllegalArgumentException("Unsupported snapshot type: " + snapshotType);
-        }
-        return true;
-    }
-
-    /**
      * Checks whether a snapshot should be triggered based on the current status and spec, and if
      * yes, returns the correct {@link SnapshotTriggerType}.
      *
@@ -179,8 +137,11 @@ public class SnapshotUtils {
      * @return An optional {@link SnapshotTriggerType}.
      */
     @VisibleForTesting
-    protected static Optional<SnapshotTriggerType> shouldTriggerSnapshot(
-            AbstractFlinkResource<?, ?> resource, Configuration conf, SnapshotType snapshotType) {
+    public static Optional<SnapshotTriggerType> shouldTriggerSnapshot(
+            AbstractFlinkResource<?, ?> resource,
+            Configuration conf,
+            SnapshotType snapshotType,
+            Instant lastTrigger) {
 
         var status = resource.getStatus();
         var jobStatus = status.getJobStatus();
@@ -197,7 +158,6 @@ public class SnapshotUtils {
         Long triggerNonce;
         Long reconciledTriggerNonce;
         boolean inProgress;
-        SnapshotInfo snapshotInfo;
         String automaticTriggerExpression;
 
         switch (snapshotType) {
@@ -205,7 +165,6 @@ public class SnapshotUtils {
                 triggerNonce = jobSpec.getSavepointTriggerNonce();
                 reconciledTriggerNonce = reconciledJobSpec.getSavepointTriggerNonce();
                 inProgress = savepointInProgress(jobStatus);
-                snapshotInfo = jobStatus.getSavepointInfo();
                 automaticTriggerExpression =
                         conf.get(KubernetesOperatorConfigOptions.PERIODIC_SAVEPOINT_INTERVAL);
                 break;
@@ -213,7 +172,6 @@ public class SnapshotUtils {
                 triggerNonce = jobSpec.getCheckpointTriggerNonce();
                 reconciledTriggerNonce = reconciledJobSpec.getCheckpointTriggerNonce();
                 inProgress = checkpointInProgress(jobStatus);
-                snapshotInfo = jobStatus.getCheckpointInfo();
                 automaticTriggerExpression =
                         conf.get(KubernetesOperatorConfigOptions.PERIODIC_CHECKPOINT_INTERVAL);
                 break;
@@ -236,14 +194,6 @@ public class SnapshotUtils {
                 return Optional.of(SnapshotTriggerType.MANUAL);
             }
         }
-
-        var lastTriggerTs = snapshotInfo.getLastPeriodicTriggerTimestamp();
-        // When the resource is first created/periodic snapshotting enabled we have to compare
-        // against the creation timestamp for triggering the first periodic savepoint
-        var lastTrigger =
-                lastTriggerTs == 0
-                        ? Instant.parse(resource.getMetadata().getCreationTimestamp())
-                        : Instant.ofEpochMilli(lastTriggerTs);
 
         if (shouldTriggerAutomaticSnapshot(snapshotType, automaticTriggerExpression, lastTrigger)) {
             if (snapshotType == CHECKPOINT && !isSnapshotTriggeringSupported(conf)) {
@@ -373,7 +323,7 @@ public class SnapshotUtils {
             if (SnapshotUtils.savepointInProgress(jobStatus)) {
                 var savepointInfo = jobStatus.getSavepointInfo();
                 ReconciliationUtils.updateLastReconciledSnapshotTriggerNonce(
-                        savepointInfo, resource, SAVEPOINT);
+                        savepointInfo.getTriggerType(), resource, SAVEPOINT);
                 savepointInfo.resetTrigger();
                 LOG.error("Job is not running, cancelling savepoint operation");
                 eventRecorder.triggerEvent(
@@ -388,7 +338,7 @@ public class SnapshotUtils {
             if (SnapshotUtils.checkpointInProgress(jobStatus)) {
                 var checkpointInfo = jobStatus.getCheckpointInfo();
                 ReconciliationUtils.updateLastReconciledSnapshotTriggerNonce(
-                        checkpointInfo, resource, CHECKPOINT);
+                        checkpointInfo.getTriggerType(), resource, CHECKPOINT);
                 checkpointInfo.resetTrigger();
                 LOG.error("Job is not running, cancelling checkpoint operation");
                 eventRecorder.triggerEvent(
@@ -401,5 +351,28 @@ public class SnapshotUtils {
                         client);
             }
         }
+    }
+
+    /**
+     * Check if the last snapshot information is known. True if the snapshot location is known
+     * explicitly (not implicitly through a last-state upgrade) or if the savepoint is known to be
+     * empty.
+     *
+     * @param status Flink resource status
+     * @return True if last savepoint is known
+     */
+    public static boolean lastSavepointKnown(CommonStatus<?> status) {
+        var location =
+                ObjectUtils.firstNonNull(
+                        status.getJobStatus().getUpgradeSavepointPath(),
+                        Optional.ofNullable(
+                                        status.getJobStatus().getSavepointInfo().getLastSavepoint())
+                                .map(Savepoint::getLocation)
+                                .orElse(null));
+
+        if (location == null) {
+            return true;
+        }
+        return !location.equals(AbstractJobReconciler.LAST_STATE_DUMMY_SP_PATH);
     }
 }

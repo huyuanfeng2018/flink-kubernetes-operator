@@ -30,20 +30,18 @@ import org.apache.flink.kubernetes.operator.autoscaler.KubernetesJobAutoScalerCo
 import org.apache.flink.kubernetes.operator.config.KubernetesOperatorConfigOptions;
 import org.apache.flink.kubernetes.operator.controller.FlinkResourceContext;
 import org.apache.flink.kubernetes.operator.reconciler.deployment.AbstractJobReconciler;
+import org.apache.flink.kubernetes.operator.service.AbstractFlinkService;
 import org.apache.flink.kubernetes.operator.utils.EventRecorder;
 import org.apache.flink.kubernetes.operator.utils.StatusRecorder;
-import org.apache.flink.runtime.messages.FlinkJobNotFoundException;
-import org.apache.flink.runtime.messages.FlinkJobTerminatedWithoutCancellationException;
 
 import io.javaoperatorsdk.operator.api.reconciler.DeleteControl;
 import io.javaoperatorsdk.operator.processing.event.ResourceID;
+import org.apache.commons.lang3.ObjectUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
-
-import static org.apache.flink.util.ExceptionUtils.findThrowable;
 
 /** The reconciler for the {@link FlinkSessionJob}. */
 public class SessionJobReconciler
@@ -102,8 +100,11 @@ public class SessionJobReconciler
     @Override
     protected void cancelJob(FlinkResourceContext<FlinkSessionJob> ctx, UpgradeMode upgradeMode)
             throws Exception {
+        var conf = ObjectUtils.firstNonNull(ctx.getObserveConfig(), new Configuration());
+
         ctx.getFlinkService()
-                .cancelSessionJob(ctx.getResource(), upgradeMode, ctx.getObserveConfig());
+                .cancelSessionJob(ctx.getResource(), upgradeMode, conf)
+                .ifPresent(location -> setUpgradeSavepointPath(ctx, location));
         ctx.getResource().getStatus().getJobStatus().setJobId(null);
     }
 
@@ -129,19 +130,10 @@ public class SessionJobReconciler
                                     : UpgradeMode.STATELESS;
                     cancelJob(ctx, upgradeMode);
                 } catch (ExecutionException e) {
-                    if (findThrowable(e, FlinkJobNotFoundException.class).isPresent()) {
-                        LOG.error("Job {} not found in the Flink cluster.", jobID, e);
+                    if (AbstractFlinkService.isJobMissingOrTerminated(e)) {
                         return DeleteControl.defaultDelete();
                     }
-
-                    if (findThrowable(e, FlinkJobTerminatedWithoutCancellationException.class)
-                            .isPresent()) {
-                        LOG.error("Job {} already terminated without cancellation.", jobID, e);
-                        return DeleteControl.defaultDelete();
-                    }
-
-                    final long delay =
-                            ctx.getOperatorConfig().getProgressCheckInterval().toMillis();
+                    long delay = ctx.getOperatorConfig().getProgressCheckInterval().toMillis();
                     LOG.error(
                             "Failed to cancel job {}, will reschedule after {} milliseconds.",
                             jobID,

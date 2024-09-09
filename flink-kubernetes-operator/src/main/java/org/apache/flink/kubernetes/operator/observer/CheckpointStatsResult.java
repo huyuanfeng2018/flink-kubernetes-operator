@@ -15,19 +15,26 @@
  * limitations under the License.
  */
 
-package org.apache.flink.kubernetes.operator.exception;
+package org.apache.flink.kubernetes.operator.observer;
 
-/** Exception to signal missing session job. */
-public class MissingSessionJobException extends RuntimeException {
-    public MissingSessionJobException(Throwable cause) {
-        super(cause);
+import lombok.Value;
+
+/** Result of fetching checkpoint stats, currently consisting only of its result path. */
+@Value
+public class CheckpointStatsResult {
+    String path;
+    boolean pending;
+    String error;
+
+    public static CheckpointStatsResult error(String error) {
+        return new CheckpointStatsResult(null, false, error);
     }
 
-    public MissingSessionJobException(String msg) {
-        super(msg);
+    public static CheckpointStatsResult pending() {
+        return new CheckpointStatsResult(null, true, null);
     }
 
-    public MissingSessionJobException(String msg, Throwable cause) {
-        super(msg, cause);
+    public static CheckpointStatsResult completed(String path) {
+        return new CheckpointStatsResult(path, false, null);
     }
 }

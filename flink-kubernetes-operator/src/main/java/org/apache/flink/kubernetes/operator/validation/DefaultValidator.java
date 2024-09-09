@@ -26,8 +26,10 @@ import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
+import org.apache.flink.kubernetes.operator.api.AbstractFlinkResource;
 import org.apache.flink.kubernetes.operator.api.FlinkDeployment;
 import org.apache.flink.kubernetes.operator.api.FlinkSessionJob;
+import org.apache.flink.kubernetes.operator.api.FlinkStateSnapshot;
 import org.apache.flink.kubernetes.operator.api.spec.FlinkDeploymentSpec;
 import org.apache.flink.kubernetes.operator.api.spec.FlinkSessionJobSpec;
 import org.apache.flink.kubernetes.operator.api.spec.FlinkVersion;
@@ -39,12 +41,14 @@ import org.apache.flink.kubernetes.operator.api.spec.KubernetesDeploymentMode;
 import org.apache.flink.kubernetes.operator.api.spec.Resource;
 import org.apache.flink.kubernetes.operator.api.spec.TaskManagerSpec;
 import org.apache.flink.kubernetes.operator.api.spec.UpgradeMode;
+import org.apache.flink.kubernetes.operator.api.status.FlinkStateSnapshotStatus;
 import org.apache.flink.kubernetes.operator.api.status.JobManagerDeploymentStatus;
 import org.apache.flink.kubernetes.operator.config.FlinkConfigBuilder;
 import org.apache.flink.kubernetes.operator.config.FlinkConfigManager;
 import org.apache.flink.kubernetes.operator.config.KubernetesOperatorConfigOptions;
 import org.apache.flink.kubernetes.operator.exception.ReconciliationException;
 import org.apache.flink.kubernetes.operator.reconciler.ReconciliationUtils;
+import org.apache.flink.kubernetes.operator.utils.FlinkStateSnapshotUtils;
 import org.apache.flink.kubernetes.operator.utils.IngressUtils;
 import org.apache.flink.kubernetes.utils.Constants;
 import org.apache.flink.runtime.clusterframework.TaskExecutorProcessUtils;
@@ -53,6 +57,8 @@ import org.apache.flink.runtime.jobmanager.JobManagerProcessUtils;
 import org.apache.flink.util.StringUtils;
 
 import io.fabric8.kubernetes.api.model.Quantity;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -64,6 +70,8 @@ import java.util.regex.Pattern;
 
 /** Default validator implementation for {@link FlinkDeployment}. */
 public class DefaultValidator implements FlinkResourceValidator {
+
+    private static final Logger LOG = LoggerFactory.getLogger(DefaultValidator.class);
 
     private static final Pattern DEPLOYMENT_NAME_PATTERN =
             Pattern.compile("[a-z]([-a-z\\d]{0,43}[a-z\\d])?");
@@ -459,10 +467,11 @@ public class DefaultValidator implements FlinkResourceValidator {
 
             if (newJob.getSavepointRedeployNonce() != null
                     && !newJob.getSavepointRedeployNonce()
-                            .equals(oldJob.getSavepointRedeployNonce())
-                    && StringUtils.isNullOrWhitespaceOnly(newJob.getInitialSavepointPath())) {
-                return Optional.of(
-                        "InitialSavepointPath must not be empty for savepoint redeployment");
+                            .equals(oldJob.getSavepointRedeployNonce())) {
+                if (StringUtils.isNullOrWhitespaceOnly(newJob.getInitialSavepointPath())) {
+                    return Optional.of(
+                            "InitialSavepointPath must not be empty for savepoint redeployment");
+                }
             }
         }
 
@@ -482,6 +491,42 @@ public class DefaultValidator implements FlinkResourceValidator {
                     validateSessionJobOnly(sessionJob),
                     validateSessionJobWithCluster(sessionJob, sessionOpt.get()));
         }
+    }
+
+    @Override
+    public Optional<String> validateStateSnapshot(
+            FlinkStateSnapshot snapshot, Optional<AbstractFlinkResource<?, ?>> target) {
+        var spec = snapshot.getSpec();
+
+        if ((!spec.isSavepoint() && !spec.isCheckpoint())
+                || (spec.isSavepoint() && spec.isCheckpoint())) {
+            return Optional.of(
+                    "Exactly one of checkpoint or savepoint configurations has to be set.");
+        }
+
+        if (spec.isSavepoint() && spec.getSavepoint().getAlreadyExists()) {
+            return Optional.empty();
+        }
+
+        // The remaining checks are not required if savepoint already exists.
+        if (spec.getJobReference() == null) {
+            return Optional.of("Job reference must be supplied for this snapshot");
+        }
+
+        // If the savepoint has already been processed by the operator, we don't need to check the
+        // job reference.
+        if (target.isEmpty()
+                && (snapshot.getStatus() == null
+                        || FlinkStateSnapshotStatus.State.TRIGGER_PENDING.equals(
+                                snapshot.getStatus().getState()))) {
+            var resourceId = FlinkStateSnapshotUtils.getSnapshotJobReferenceResourceId(snapshot);
+            return Optional.of(
+                    String.format(
+                            "Target for snapshot %s/%s was not found",
+                            resourceId.getNamespace().orElse(null), resourceId.getName()));
+        }
+
+        return Optional.empty();
     }
 
     private Optional<String> validateSessionJobOnly(FlinkSessionJob sessionJob) {

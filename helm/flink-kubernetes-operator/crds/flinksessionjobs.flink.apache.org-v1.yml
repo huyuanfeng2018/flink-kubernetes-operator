@@ -200,6 +200,8 @@ spec:
                     type: string
                   updateTime:
                     type: string
+                  upgradeSavepointPath:
+                    type: string
                 type: object
               lifecycleState:
                 enum:

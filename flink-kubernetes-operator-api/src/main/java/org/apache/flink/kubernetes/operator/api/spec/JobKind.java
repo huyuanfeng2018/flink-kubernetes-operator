@@ -15,19 +15,19 @@
  * limitations under the License.
  */
 
-package org.apache.flink.kubernetes.operator.exception;
+package org.apache.flink.kubernetes.operator.api.spec;
 
-/** Exception to signal unrecognized job found. */
-public class UnknownJobException extends RuntimeException {
-    public UnknownJobException(Throwable cause) {
-        super(cause);
-    }
+import org.apache.flink.kubernetes.operator.api.CrdConstants;
 
-    public UnknownJobException(String msg) {
-        super(msg);
-    }
+import com.fasterxml.jackson.annotation.JsonProperty;
 
-    public UnknownJobException(String msg, Throwable cause) {
-        super(msg, cause);
-    }
+/** Describes the Kubernetes kind of job reference. */
+public enum JobKind {
+    /** FlinkDeployment CR kind. */
+    @JsonProperty(CrdConstants.KIND_FLINK_DEPLOYMENT)
+    FLINK_DEPLOYMENT,
+
+    /** FlinkSessionJob CR kind. */
+    @JsonProperty(CrdConstants.KIND_SESSION_JOB)
+    FLINK_SESSION_JOB
 }
