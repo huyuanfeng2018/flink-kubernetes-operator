@@ -50,7 +50,7 @@ public class JdbcEventInteractor {
             throws Exception {
         var query =
                 "select * from t_flink_autoscaler_event_handler "
-                        + "where job_key = ? and reason = ? and event_key = ? ";
+                        + "where job_key = ? and reason = ? and event_key = ? order by id desc limit 1 ";
 
         try (var pstmt = conn.prepareStatement(query)) {
             pstmt.setString(1, jobKey);
