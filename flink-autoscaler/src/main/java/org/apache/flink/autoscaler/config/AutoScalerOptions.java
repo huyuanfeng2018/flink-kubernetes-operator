@@ -353,12 +353,14 @@ public class AutoScalerOptions {
                     .withDescription(
                             "Quota of the CPU count. When scaling would go beyond this number the the scaling is not going to happen.");
 
-    public static final ConfigOption<NumKeyGroupsOrPartitionsParallelismAdjuster.Mode> SCALING_KEY_GROUP_SOURCE_PARTITIONS_ADJUST_MODE =
-            autoScalerConfig("scaling.key-group.partitions.adjust.strategy")
-                    .enumType(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.class)
-                    .defaultValue(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.DEFAULT)
-                    .withFallbackKeys(oldOperatorConfigKey("scaling.key-group.partitions.adjust.strategy"))
-                    .withDescription(
-                            "If this option is enabled, The determination of parallelism will be more radical, which"
-                                    + " will maximize resource utilization, but may also cause data skew in some vertex.");
+    public static final ConfigOption<NumKeyGroupsOrPartitionsParallelismAdjuster.Mode>
+            SCALING_KEY_GROUP_PARTITIONS_ADJUST_MODE =
+                    autoScalerConfig("scaling.key-group.partitions.adjust.mode")
+                            .enumType(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.class)
+                            .defaultValue(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.DEFAULT)
+                            .withFallbackKeys(
+                                    oldOperatorConfigKey(
+                                            "scaling.key-group.partitions.adjust.mode"))
+                            .withDescription(
+                                    "How to adjust the parallelism of Source vertex or upstream shuffle is keyBy");
 }

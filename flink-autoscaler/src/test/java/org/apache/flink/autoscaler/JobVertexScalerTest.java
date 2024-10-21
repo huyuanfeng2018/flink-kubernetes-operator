@@ -396,7 +396,9 @@ public class JobVertexScalerTest {
 
         // scaling.radical.enabled  = true
         Configuration conf = context.getConfiguration();
-        conf.set(AutoScalerOptions.SCALING_RADICAL_ENABLED, true);
+        conf.set(
+                AutoScalerOptions.SCALING_KEY_GROUP_PARTITIONS_ADJUST_MODE,
+                NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.MAXIMIZE_UTILISATION);
         assertEquals(
                 26,
                 JobVertexScaler.scale(
@@ -1052,7 +1054,9 @@ public class JobVertexScalerTest {
 
         // scaling.radical.enabled  = true
         Configuration conf = context.getConfiguration();
-        conf.set(AutoScalerOptions.SCALING_RADICAL_ENABLED, true);
+        conf.set(
+                AutoScalerOptions.SCALING_KEY_GROUP_PARTITIONS_ADJUST_MODE,
+                NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.MAXIMIZE_UTILISATION);
         assertEquals(
                 100,
                 JobVertexScaler.scale(
