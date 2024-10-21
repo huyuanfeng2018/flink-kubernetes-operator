@@ -394,7 +394,6 @@ public class JobVertexScalerTest {
                         eventCollector,
                         context));
 
-        // scaling.radical.enabled  = true
         Configuration conf = context.getConfiguration();
         conf.set(
                 AutoScalerOptions.SCALING_KEY_GROUP_PARTITIONS_ADJUST_MODE,
@@ -1052,7 +1051,6 @@ public class JobVertexScalerTest {
                         eventCollector,
                         context));
 
-        // scaling.radical.enabled  = true
         Configuration conf = context.getConfiguration();
         conf.set(
                 AutoScalerOptions.SCALING_KEY_GROUP_PARTITIONS_ADJUST_MODE,
