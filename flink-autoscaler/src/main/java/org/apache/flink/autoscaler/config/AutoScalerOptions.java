@@ -17,6 +17,7 @@
 
 package org.apache.flink.autoscaler.config;
 
+import org.apache.flink.autoscaler.NumKeyGroupsOrPartitionsParallelismAdjuster;
 import org.apache.flink.autoscaler.metrics.MetricAggregator;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
@@ -352,11 +353,11 @@ public class AutoScalerOptions {
                     .withDescription(
                             "Quota of the CPU count. When scaling would go beyond this number the the scaling is not going to happen.");
 
-    public static final ConfigOption<Boolean> SCALING_RADICAL_ENABLED =
-            autoScalerConfig("scaling.radical.enabled")
-                    .booleanType()
-                    .defaultValue(false)
-                    .withFallbackKeys(oldOperatorConfigKey("scaling.radical.enabled"))
+    public static final ConfigOption<NumKeyGroupsOrPartitionsParallelismAdjuster.Mode> SCALING_KEY_GROUP_SOURCE_PARTITIONS_ADJUST_MODE =
+            autoScalerConfig("scaling.key-group.partitions.adjust.strategy")
+                    .enumType(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.class)
+                    .defaultValue(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.DEFAULT)
+                    .withFallbackKeys(oldOperatorConfigKey("scaling.key-group.partitions.adjust.strategy"))
                     .withDescription(
                             "If this option is enabled, The determination of parallelism will be more radical, which"
                                     + " will maximize resource utilization, but may also cause data skew in some vertex.");
