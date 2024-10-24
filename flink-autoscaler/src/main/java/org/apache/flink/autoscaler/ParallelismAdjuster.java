@@ -19,20 +19,29 @@ package org.apache.flink.autoscaler;
 
 import org.apache.flink.autoscaler.config.AutoScalerOptions;
 import org.apache.flink.autoscaler.event.AutoScalerEventHandler;
+import org.apache.flink.autoscaler.topology.ShipStrategy;
 import org.apache.flink.configuration.DescribedEnum;
 import org.apache.flink.configuration.description.InlineElement;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 
+import java.util.Collection;
+
 import static org.apache.flink.autoscaler.JobVertexScaler.SCALE_LIMITED_MESSAGE_FORMAT;
 import static org.apache.flink.autoscaler.JobVertexScaler.SCALING_LIMITED;
+import static org.apache.flink.autoscaler.ParallelismAdjuster.KeyGroupOrPartitionsAdjustMode.MAXIMIZE_UTILISATION;
 import static org.apache.flink.autoscaler.config.AutoScalerOptions.SCALING_EVENT_INTERVAL;
+import static org.apache.flink.autoscaler.topology.ShipStrategy.HASH;
 import static org.apache.flink.configuration.description.TextElement.text;
 
 /**
- * Component responsible adjusts the parallelism of a vertex that knows the number of partitions or
- * a vertex whose upstream shuffle is key by.
+ * Component responsible adjusts the parallelism of a vertex.
+ *
+ * <p>When input vertex {@link ShipStrategy} is {@link ShipStrategy#HASH} or knows the number of
+ * current partitions of vertex. We hope to adjust the parallelism of the current vertex according
+ * to the number of key groups or partitions to achieve the goal of evenly distributing data among
+ * subtasks or maximizing utilization.
  */
-public class NumKeyGroupsOrPartitionsParallelismAdjuster {
+public class ParallelismAdjuster {
 
     public static <KEY, Context extends JobAutoScalerContext<KEY>> int adjust(
             JobVertexID vertex,
@@ -42,12 +51,17 @@ public class NumKeyGroupsOrPartitionsParallelismAdjuster {
             int numSourcePartitions,
             int newParallelism,
             int upperBound,
-            int parallelismLowerLimit) {
-
+            int parallelismLowerLimit,
+            Collection<ShipStrategy> inputShipStrategies) {
+        var adjustByMaxParallelismOrPartitions =
+                numSourcePartitions > 0 || inputShipStrategies.contains(HASH);
+        if (!adjustByMaxParallelismOrPartitions) {
+            return newParallelism;
+        }
         var numKeyGroupsOrPartitions =
                 numSourcePartitions <= 0 ? maxParallelism : numSourcePartitions;
 
-        Mode mode =
+        KeyGroupOrPartitionsAdjustMode mode =
                 context.getConfiguration()
                         .get(AutoScalerOptions.SCALING_KEY_GROUP_PARTITIONS_ADJUST_MODE);
 
@@ -61,7 +75,7 @@ public class NumKeyGroupsOrPartitionsParallelismAdjuster {
                     ||
                     // When Mode is MAXIMIZE_UTILISATION , Try to find the smallest parallelism
                     // that can satisfy the current consumption rate.
-                    (mode == Mode.MAXIMIZE_UTILISATION
+                    (mode == MAXIMIZE_UTILISATION
                             && numKeyGroupsOrPartitions / p
                                     < numKeyGroupsOrPartitions / newParallelism)) {
                 return p;
@@ -108,8 +122,8 @@ public class NumKeyGroupsOrPartitionsParallelismAdjuster {
         return p;
     }
 
-    /** The mode of the parallelism adjustment. */
-    public enum Mode implements DescribedEnum {
+    /** The mode of the key group or parallelism adjustment. */
+    public enum KeyGroupOrPartitionsAdjustMode implements DescribedEnum {
         DEFAULT(
                 "This mode ensures that the parallelism adjustment attempts to evenly distribute data across subtasks"
                         + ". It is particularly effective for source vertices that are aware of partition counts or vertices after "
@@ -122,7 +136,7 @@ public class NumKeyGroupsOrPartitionsParallelismAdjuster {
 
         private final InlineElement description;
 
-        Mode(String description) {
+        KeyGroupOrPartitionsAdjustMode(String description) {
             this.description = text(description);
         }
 

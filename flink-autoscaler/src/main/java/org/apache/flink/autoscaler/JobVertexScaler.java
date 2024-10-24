@@ -53,7 +53,6 @@ import static org.apache.flink.autoscaler.metrics.ScalingMetric.MAX_PARALLELISM;
 import static org.apache.flink.autoscaler.metrics.ScalingMetric.NUM_SOURCE_PARTITIONS;
 import static org.apache.flink.autoscaler.metrics.ScalingMetric.PARALLELISM;
 import static org.apache.flink.autoscaler.metrics.ScalingMetric.TRUE_PROCESSING_RATE;
-import static org.apache.flink.autoscaler.topology.ShipStrategy.HASH;
 import static org.apache.flink.util.Preconditions.checkArgument;
 
 /** Component responsible for computing vertex parallelism based on the scaling metrics. */
@@ -355,12 +354,9 @@ public class JobVertexScaler<KEY, Context extends JobAutoScalerContext<KEY>> {
      * But we limit newParallelism between parallelismLowerLimit and min(parallelismUpperLimit,
      * maxParallelism).
      *
-     * <p>Also, in order to ensure the data is evenly spread across subtasks, we try to adjust the
-     * parallelism for source and keyed vertex such that it divides the maxParallelism without a
-     * remainder.
-     *
-     * <p>This method also attempts to adjust the parallelism to ensure it aligns well with the
-     * number of source partitions if a vertex has a known source partition count.
+     * <p>Also, if we know the number of partitions or key groups corresponding to the current
+     * vertex, the degree of parallelism will be adjusted accordingly. For specific logic, please
+     * refer to {@link ParallelismAdjuster}.
      */
     @VisibleForTesting
     protected static <KEY, Context extends JobAutoScalerContext<KEY>> int scale(
@@ -403,23 +399,16 @@ public class JobVertexScaler<KEY, Context extends JobAutoScalerContext<KEY>> {
         // Apply min/max parallelism
         newParallelism = Math.min(Math.max(parallelismLowerLimit, newParallelism), upperBound);
 
-        var adjustByMaxParallelismOrPartitions =
-                numSourcePartitions > 0 || inputShipStrategies.contains(HASH);
-        if (!adjustByMaxParallelismOrPartitions) {
-            return newParallelism;
-        }
-
-        newParallelism =
-                NumKeyGroupsOrPartitionsParallelismAdjuster.adjust(
-                        vertex,
-                        context,
-                        eventHandler,
-                        maxParallelism,
-                        numSourcePartitions,
-                        newParallelism,
-                        upperBound,
-                        parallelismLowerLimit);
-        return newParallelism;
+        return ParallelismAdjuster.adjust(
+                vertex,
+                context,
+                eventHandler,
+                maxParallelism,
+                numSourcePartitions,
+                newParallelism,
+                upperBound,
+                parallelismLowerLimit,
+                inputShipStrategies);
     }
 
     @VisibleForTesting

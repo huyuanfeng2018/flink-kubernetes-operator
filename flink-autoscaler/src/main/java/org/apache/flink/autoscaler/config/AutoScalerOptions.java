@@ -17,7 +17,7 @@
 
 package org.apache.flink.autoscaler.config;
 
-import org.apache.flink.autoscaler.NumKeyGroupsOrPartitionsParallelismAdjuster;
+import org.apache.flink.autoscaler.ParallelismAdjuster;
 import org.apache.flink.autoscaler.metrics.MetricAggregator;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
@@ -353,11 +353,12 @@ public class AutoScalerOptions {
                     .withDescription(
                             "Quota of the CPU count. When scaling would go beyond this number the the scaling is not going to happen.");
 
-    public static final ConfigOption<NumKeyGroupsOrPartitionsParallelismAdjuster.Mode>
+    public static final ConfigOption<ParallelismAdjuster.KeyGroupOrPartitionsAdjustMode>
             SCALING_KEY_GROUP_PARTITIONS_ADJUST_MODE =
                     autoScalerConfig("scaling.key-group.partitions.adjust.mode")
-                            .enumType(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.class)
-                            .defaultValue(NumKeyGroupsOrPartitionsParallelismAdjuster.Mode.DEFAULT)
+                            .enumType(ParallelismAdjuster.KeyGroupOrPartitionsAdjustMode.class)
+                            .defaultValue(
+                                    ParallelismAdjuster.KeyGroupOrPartitionsAdjustMode.DEFAULT)
                             .withFallbackKeys(
                                     oldOperatorConfigKey(
                                             "scaling.key-group.partitions.adjust.mode"))
